@@ -174,8 +174,9 @@ public class InviteRequestProcessor extends SIPRequestProcessorParent implements
                         // 点播成功， TODO 可以在此处检测cancel命令是否存在，存在则不发送
                         if (userSetting.getUseCustomSsrcForParentInvite()) {
                             // 上级平台点播时不使用上级平台指定的ssrc，使用自定义的ssrc，参考国标文档-点播外域设备媒体流SSRC处理方式
-                            finalInviteInfo.setSsrc(sendSsrcFactory.getSendSsrc(
-                                    "Play".equalsIgnoreCase(finalInviteInfo.getSessionName()) ? "0" : "1"));
+                            String sendSsrc = sendSsrcFactory.getSendSsrc(
+                                    "Play".equalsIgnoreCase(finalInviteInfo.getSessionName()) ? "0" : "1");
+                            finalInviteInfo.setSsrc(sendSsrc);
                         }
                         // 构建sendRTP内容
                         SendRtpInfo sendRtpItem = sendRtpServerService.createSendRtpInfo(streamInfo.getMediaServer(),
@@ -196,6 +197,22 @@ public class InviteRequestProcessor extends SIPRequestProcessorParent implements
                             sdpIp = platform.getSendStreamIp();
                         }
                         String content = createSendSdp(sendRtpItem, finalInviteInfo, sdpIp);
+
+                        // tcp主动模式，回复sdp后开启监听
+                        if (sendRtpItem.isTcpActive()) {
+                            MediaServer mediaServer = mediaServerService.getOne(sendRtpItem.getMediaServerId());
+                            try {
+                                mediaServerService.startSendRtpPassive(mediaServer, sendRtpItem, 10000);
+                                DeviceChannel deviceChannel = deviceChannelService.getOneForSourceById(sendRtpItem.getChannelId());
+                                if (deviceChannel != null) {
+                                    redisCatchStorage.sendPlatformStartPlayMsg(sendRtpItem, deviceChannel, platform);
+                                }
+                            } catch (ControllerException e) {
+                                log.warn("[上级INVITE] tcp主动模式 发流失败", e);
+                                sendBye(platform, finalInviteInfo.getCallId());
+                            }
+                        }
+
                         // 超时未收到Ack应该回复bye,当前等待时间为10秒
                         dynamicTask.startDelay(finalInviteInfo.getCallId(), () -> {
                             log.info("[Ack ] 等待超时, {}/{}", finalInviteInfo.getCallId(), channel.getGbDeviceId());
@@ -208,20 +225,7 @@ public class InviteRequestProcessor extends SIPRequestProcessorParent implements
                             log.error("[命令发送失败] 上级INVITE 发送 200（SDP）: {}", e.getMessage());
                         }
 
-                        // tcp主动模式，回复sdp后开启监听
-                        if (sendRtpItem.isTcpActive()) {
-                            MediaServer mediaServer = mediaServerService.getOne(sendRtpItem.getMediaServerId());
-                            try {
-                                mediaServerService.startSendRtpPassive(mediaServer, sendRtpItem, 5);
-                                DeviceChannel deviceChannel = deviceChannelService.getOneForSourceById(sendRtpItem.getChannelId());
-                                if (deviceChannel != null) {
-                                    redisCatchStorage.sendPlatformStartPlayMsg(sendRtpItem, deviceChannel, platform);
-                                }
-                            } catch (ControllerException e) {
-                                log.warn("[上级INVITE] tcp主动模式 发流失败", e);
-                                sendBye(platform, finalInviteInfo.getCallId());
-                            }
-                        }
+
                     }
                 }));
             }
